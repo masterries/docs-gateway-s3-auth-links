@@ -1,0 +1,6 @@
+Northwind order platform: architecture notes (fictional)
+
+- Orders enter through one API; everything behind it talks through a queue.
+- Each service owns its database. No service reads another service's tables.
+- The nightly export writes to object storage. Nobody gets a shared key for it: readers log in and
+  get short-lived credentials of their own.

@@ -1,0 +1,12 @@
+Welcome to the Northwind demo data.
+
+Everything in this bucket is invented for this demo. The company, the people and the numbers do not
+exist.
+
+Three folders:
+  shared/       everyone with a demo group may read it
+  finance/      only the group demo-finance
+  engineering/  only the group demo-engineering
+
+Who may read what is decided by RustFS, not by the gateway in front of it. Open a link to a folder you
+have no right to: the refusal comes from the object store itself.

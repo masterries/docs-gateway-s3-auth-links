@@ -1,0 +1,24 @@
+apisix:
+  enable_admin: false
+  # Only HTTPS is served; this plain port is never published (compose.yaml).
+  node_listen: 9080
+  ssl:
+    enable: true
+    listen:
+      - port: 9443
+    # Whom APISIX trusts for its calls to Keycloak.
+    ssl_trusted_certificate: /certs/ca.pem
+
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
+
+plugins:
+  - openid-connect
+  - proxy-rewrite
+
+nginx_config:
+  # Keycloak's tokens make long cookies.
+  http_server_configuration_snippet: |
+    large_client_header_buffers 8 32k;

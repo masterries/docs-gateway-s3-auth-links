@@ -1,0 +1,75 @@
+upstreams:
+  - id: service
+    type: roundrobin
+    nodes:
+      "service:8000": 1
+
+routes:
+  - id: health
+    uri: /.health
+    methods: [GET]
+    priority: 10
+    upstream_id: service
+
+  - id: signed-out
+    uri: /.auth/signed-out
+    methods: [GET]
+    priority: 10
+    upstream_id: service
+
+  # After a login the plugin redirects to the path as it was typed, and //other.site/ would leave this site.
+  - id: no-double-slash
+    uri: /*
+    methods: [GET, HEAD]
+    priority: 10
+    vars: [["real_request_uri", "~~", "^//"]]
+    upstream_id: service
+    plugins:
+      proxy-rewrite:
+        uri: /
+
+  # Every link: login at Keycloak if needed, then the service with the raw ID token.
+  - id: documents
+    uri: /*
+    methods: [GET, HEAD]
+    upstream_id: service
+    plugins:
+      openid-connect:
+        discovery: "${{KEYCLOAK_ISSUER}}/.well-known/openid-configuration"
+        client_id: "${{KEYCLOAK_CLIENT_ID}}"
+        client_secret: "${{KEYCLOAK_CLIENT_SECRET}}"
+        redirect_uri: "${{PUBLIC_URL}}/.auth/callback"
+        logout_path: /.auth/logout
+        post_logout_redirect_uri: "${{PUBLIC_URL}}/.auth/signed-out"
+        # Sends the client's name to Keycloak instead of the ID token, which would end up in a browser URL.
+        # Keycloak asks for one click to confirm.
+        redirect_after_logout_uri: "${{KEYCLOAK_ISSUER}}/protocol/openid-connect/logout"
+        redirect_after_logout_with_client_id: true
+        scope: openid profile
+        use_pkce: true
+        use_nonce: true
+        ssl_verify: true
+        unauth_action: auth
+        bearer_only: false
+        # Renew on the server before Keycloak's 5-minute tokens run out, so RustFS always gets a valid one,
+        # an open PDF keeps loading, and a disabled user or a changed group counts within minutes.
+        renew_access_token_on_expiry: true
+        access_token_expires_leeway: 30
+        set_raw_id_token_header: true
+        set_id_token_header: false
+        set_access_token_header: false
+        set_userinfo_header: false
+        set_refresh_token_header: false
+        session:
+          secret: "${{SESSION_SECRET}}"
+          cookie_name: docs_session
+          cookie_path: /
+          cookie_secure: true
+          cookie_http_only: true
+          # Lax: a click on a link in another application must arrive logged in.
+          cookie_same_site: Lax
+          absolute_timeout: 28800
+      # The session cookie stays here.
+      proxy-rewrite:
+        headers:
+          remove: [Cookie]

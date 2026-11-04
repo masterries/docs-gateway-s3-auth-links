@@ -1,0 +1,80 @@
+# Everything around the tool that a real installation already has, for trying it on one machine.
+# Fixed demo passwords, plain HTTP inside: never for real data. See the README for the command.
+services:
+  certs:
+    image: alpine/openssl:3.5.4
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        cd /certs
+        if [ ! -f tls.crt ]; then
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 365 \
+            -subj /CN=docs.localhost -addext subjectAltName=DNS:docs.localhost -keyout tls.key -out tls.crt
+          cp tls.crt ca.pem
+        fi
+        chown 0:636 tls.key
+        chmod 640 tls.key
+        chmod 644 tls.crt ca.pem
+    volumes:
+      - ./certs:/certs
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:a78d6b79572168cb25886b80a8b5b8d4ed4390743e3eecb810538683e209dd6b
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # One address for the browser and for the containers: browsers send *.localhost to this machine,
+      # and the network alias below sends it to this container.
+      KC_HOSTNAME: http://keycloak.localhost:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./demo/realm.json:/opt/keycloak/data/import/realm.json:ro
+    networks:
+      default:
+        aliases: [keycloak.localhost]
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /realms/demo HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  rustfs:
+    image: rustfs/rustfs:1.0.3@sha256:128220dc9382bac81940a1a9616ee8c274a3f3b8f647eedbeb50df5bb8b49922
+    depends_on:
+      keycloak: { condition: service_healthy }
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ACCESS_KEY: demo-admin
+      RUSTFS_SECRET_KEY: demo-admin-secret
+      RUSTFS_IDENTITY_OPENID_ENABLE: "on"
+      RUSTFS_IDENTITY_OPENID_CONFIG_URL: ${KEYCLOAK_ISSUER}
+      RUSTFS_IDENTITY_OPENID_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
+      RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM: groups
+      RUSTFS_IDENTITY_OPENID_CLAIM_PREFIX: kc-
+      RUSTFS_OUTBOUND_ALLOW_ORIGINS: http://keycloak.localhost:8080
+    volumes:
+      - rustfs-data:/data
+
+  seed:
+    image: python:3.13-slim@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1
+    depends_on: [rustfs]
+    command: ["python", "/demo/seed/seed.py"]
+    environment:
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER}
+    volumes:
+      - ./demo:/demo:ro
+
+  service:
+    depends_on:
+      seed: { condition: service_completed_successfully }
+
+  apisix:
+    depends_on:
+      certs: { condition: service_completed_successfully }
+      keycloak: { condition: service_healthy }
+      service: { condition: service_started }
+
+volumes:
+  rustfs-data:

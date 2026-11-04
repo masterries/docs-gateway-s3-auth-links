@@ -1,0 +1,6 @@
+invoice,customer,issued,amount_eur,status
+NW-2026-0311,Aster Logistics,2026-07-04,18400.00,paid
+NW-2026-0327,Brightwell Foods,2026-07-19,6250.50,paid
+NW-2026-0352,Cobalt Energy,2026-08-02,41200.00,overdue
+NW-2026-0368,Delta Maritime,2026-08-27,9975.00,paid
+NW-2026-0391,Evergreen Retail,2026-09-15,12300.75,open
