@@ -120,7 +120,47 @@ curl https://docs.example.com/.health        # with your port, if not 443
 - **Renew the certificate:** copy the new files into `certs/`, then `docker compose restart apisix`.
 - **Update the Python packages:** `service/lock.sh`, then `docker compose up -d --build`.
 - **Update APISIX:** change the tag and digest in `compose.yaml`.
-- **Log:** `docker compose logs service` names who read what, with the status.
+
+## Access log
+
+Optional, and off by default. Set it in `.env`, then run `docker compose up -d`:
+
+| `ACCESS_LOG` | What each line holds |
+|---|---|
+| `off` | nothing about who read what |
+| `anonymous` | a stable code per person, the IP's network (/24 or /48), the source, the document |
+| `full` | the username, the whole IP, the source, the document |
+
+`anonymous` also needs `ACCESS_LOG_KEY`. The code is a keyed hash of the username, so you can count per person without seeing
+names. Anyone with the key and a list of usernames can work out who is who, so legally this is pseudonymous rather than
+anonymous. Changing the key gives everyone a new code. Check with your data protection contact before recording who reads what.
+
+**Telling your applications apart.** A click comes from the person's browser, so the IP says where the person sits, not which
+application showed the link. Let each application add its name to its links, using letters, digits, `.`, `_` or `-`:
+
+```text
+https://docs.example.com/bucket1/report.pdf?source=chatbot
+```
+
+The tag survives the login and never reaches RustFS. Without a tag, the log uses the host name from the browser's `Referer`
+header if it sends one, and otherwise says `direct`. A tag is the application's own word, and anyone can change it in a link, so
+it is good for statistics but not as proof.
+
+**The report:**
+
+```bash
+docker compose logs --no-log-prefix service | python3 tools/access_report.py
+```
+
+It counts reads per document and source, and per document and person, and also lists refusals. One opening counts once, however
+many parts a PDF viewer loads, and opening it again counts again.
+
+- **Check the IP once on your server:** Docker normally keeps the visitor's address, but some network setups replace it with
+  Docker's own gateway address. Open a link from another machine and compare the log.
+- **Keeping history:** the lines go to Docker's log and are lost when the container is recreated. For longer periods, send them to
+  your log system. Each line is one JSON object.
+- **Behind a load balancer:** the IP is the balancer's. An HTTP balancer can pass the real one with `real_ip_from` under
+  `nginx_config.http` in `apisix/config.yaml`. One that only forwards TLS connections hides it.
 
 ## License
 

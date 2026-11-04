@@ -27,6 +27,8 @@ services:
     environment:
       S3_ENDPOINT: ${S3_ENDPOINT:?}
       S3_REGION: ${S3_REGION:-us-east-1}
+      ACCESS_LOG: ${ACCESS_LOG:-off}
+      ACCESS_LOG_KEY: ${ACCESS_LOG_KEY:-}
     volumes:
       - ./certs:/certs:ro
     read_only: true

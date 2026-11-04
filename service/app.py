@@ -12,6 +12,7 @@ import datetime
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import logging
 import os
@@ -30,6 +31,14 @@ from starlette.background import BackgroundTask
 S3_ENDPOINT = os.environ["S3_ENDPOINT"].rstrip("/")
 S3_REGION = os.environ.get("S3_REGION", "us-east-1")
 CA_FILE = os.environ.get("CA_FILE", "/certs/ca.pem")
+# off: no record of who read what. anonymous: a stable code for each person and a shortened IP.
+# full: the person's name and the whole IP. A wrong setting stops the service instead of logging too much.
+ACCESS_LOG = os.environ.get("ACCESS_LOG") or "off"
+ACCESS_LOG_KEY = os.environ.get("ACCESS_LOG_KEY", "")
+if ACCESS_LOG not in ("off", "anonymous", "full"):
+    raise SystemExit("ACCESS_LOG must be off, anonymous or full.")
+if ACCESS_LOG == "anonymous" and len(ACCESS_LOG_KEY) < 32:
+    raise SystemExit("ACCESS_LOG=anonymous needs an ACCESS_LOG_KEY of at least 32 characters.")
 
 KEY_SECONDS = 900
 MAX_CACHED_KEYS = 1000
@@ -62,6 +71,7 @@ VALID_BUCKET = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 VALID_KEY = re.compile(r"[^\x00-\x1f\x7f]{1,1024}")
 # RustFS answers these first path segments itself (admin API, health). A link must only reach objects.
 NOT_A_BUCKET = {"rustfs", "minio", "profile", "health", "iceberg"}
+VALID_SOURCE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 PASSED_ON = ("range", "if-range", "if-none-match", "if-modified-since")
 KEPT = ("content-length", "content-range", "content-encoding", "accept-ranges", "etag", "last-modified")
 
@@ -84,8 +94,35 @@ class Unavailable(Exception):
     pass
 
 
-def audit(event, **fields):
-    log.info(json.dumps({"event": event, **fields}, ensure_ascii=False))
+def short_ip(address):
+    """The network, not the machine: /24 for IPv4, /48 for IPv6."""
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return "?"
+    return str(ipaddress.ip_network(f"{ip}/{24 if ip.version == 4 else 48}", strict=False))
+
+
+def source_of(request):
+    """Which application a link came from. Its own word, not proof: anyone can write ?source= into a link."""
+    tag = request.query_params.get("source", "")
+    if VALID_SOURCE.fullmatch(tag):
+        return tag
+    host = urllib.parse.urlsplit(request.headers.get("referer", "")).hostname
+    return host if host and host != request.headers.get("host", "").split(":")[0] else "direct"
+
+
+def audit(event, request, token, **fields):
+    if ACCESS_LOG == "off":
+        return
+    ip = request.headers.get("x-real-ip", "")
+    user = username(token)
+    who = (
+        {"user": user, "ip": ip or "?"} if ACCESS_LOG == "full"
+        else {"person": hmac.new(ACCESS_LOG_KEY.encode(), user.encode(), hashlib.sha256).hexdigest()[:16], "ip": short_ip(ip)}
+    )
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log.info(json.dumps({"event": event, "time": stamp, **who, "source": source_of(request), **fields}, ensure_ascii=False))
 
 
 def username(token):
@@ -98,7 +135,7 @@ def username(token):
         return "?"
 
 
-async def s3_keys(token):
+async def s3_keys(token, request):
     """This person's S3 keys, or None if RustFS gives them none. A renewed token gets new keys, so a changed
     group takes effect with the renewal."""
     now = time.time()
@@ -117,7 +154,7 @@ async def s3_keys(token):
         raise Unavailable(f"STS: {type(failure).__name__}") from failure
     # RustFS's answer for a valid token whose groups name no policy.
     if answer.status_code == 400 and fields.get("Code") == "InvalidArgument":
-        audit("keys_refused", user=username(token), code=fields.get("Code"))
+        audit("keys_refused", request, token, code=fields.get("Code"))
         return None
     if answer.status_code != 200 or not all(fields.get(n) for n in ("AccessKeyId", "SecretAccessKey", "SessionToken")):
         raise Unavailable(f"STS: HTTP {answer.status_code} {fields.get('Code')}")
@@ -219,7 +256,7 @@ async def document(bucket: str, key: str, request: Request):
     user = username(token)
     unavailable = page(503, "Try again in a moment", "The document store does not answer right now.")
     try:
-        keys = await s3_keys(token)
+        keys = await s3_keys(token, request)
     except Unavailable as failure:
         log.warning("%s", failure)
         return unavailable
@@ -243,13 +280,15 @@ async def document(bucket: str, key: str, request: Request):
         finally:
             await upstream.aclose()
         code = found.group(1).decode() if found else ""
-        audit("read", user=user, access_key=keys["access"], document=name, status=status, code=code)
+        audit("refused", request, token, document=name, status=status, code=code)
         if status == 403 and (code == "AccessDenied" or request.method == "HEAD"):
             return page(403, "No access", f"You are signed in as {user}. RustFS refused {name}: your groups have no right to this document.")
         if status == 404:
             return page(404, "Not found", f"There is no document {name}.")
         return page(502, "Try again in a moment", "The document store could not answer this request.")
-    audit("read", user=user, access_key=keys["access"], document=name, status=status)
+    # A PDF viewer loads more parts with Range requests. Only opening the file counts as a read.
+    if request.method == "GET" and status == 200:
+        audit("read", request, token, document=name, status=status)
     answer_headers = file_headers(key, upstream)
     if request.method == "HEAD" or status == 304:
         await upstream.aclose()
