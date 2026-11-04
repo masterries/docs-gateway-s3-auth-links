@@ -2,7 +2,7 @@
 # Fixed demo passwords, plain HTTP inside: never for real data. See the README for the command.
 services:
   certs:
-    image: alpine/openssl:3.5.4
+    image: alpine/openssl:3.5.9
     entrypoint: ["sh", "-c"]
     command:
       - |
