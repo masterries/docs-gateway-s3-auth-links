@@ -160,7 +160,7 @@ it is good for statistics but not as proof.
 **The report:**
 
 ```bash
-docker compose logs --no-log-prefix service | python3 tools/access_report.py
+docker compose exec service sh -c 'cat /logs/access*' | python3 tools/access_report.py
 ```
 
 It counts reads per document and source, and per document and person, and also lists refusals. One opening counts once, however
@@ -168,9 +168,15 @@ many parts a PDF viewer loads, and opening it again counts again.
 
 - **Check the IP once on your server:** Docker normally keeps the visitor's address, but some network setups replace it with
   Docker's own gateway address. Open a link from another machine and compare the log.
-- **Keeping history:** the lines go to Docker's log, and to the volume `access-log` for the dashboard. That volume keeps at most two
-  files of 50 MB, and the oldest lines drop out when both are full. For longer periods, send the lines to your log system. Each line
-  is one JSON object.
+- **Where it lies:** one file per day in the Docker volume `access-log`, at `/logs` in the container. To find it on the server, run
+  `docker volume inspect docs-gateway-s3-auth-links_access-log`. It survives restarts, updates and recreated containers.
+  `docker compose down -v` deletes it, and so does `docker volume rm`.
+- **How long it stays:** `ACCESS_LOG_RETENTION_DAYS`, 30 by default. A check at start and then every hour deletes older files, also
+  when the log has been turned off since. Files are removed whole, so a line can stay up to a day longer. Back up the volume and
+  your backups keep the lines for as long as you keep them.
+- **Disk space:** each day's file stops at 50 MB, and further lines of that day are lost. Reads keep working when the disk is full.
+- **Sending it elsewhere:** `ACCESS_LOG_STDOUT=true` also writes each line, as one JSON object, to Docker's log for your log system.
+  Retention then has to be set up there too, because this setting does not reach it.
 - **Behind a load balancer:** the IP is the balancer's. An HTTP balancer can pass the real one with `real_ip_from` under
   `nginx_config.http` in `apisix/config.yaml`. One that only forwards TLS connections hides it.
 

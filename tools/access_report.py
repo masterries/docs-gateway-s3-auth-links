@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Counts the access log: docker compose logs --no-log-prefix service | python3 tools/access_report.py"""
+"""Counts the access log: docker compose exec service sh -c 'cat /logs/access*' | python3 tools/access_report.py"""
 import collections
 import json
 import sys

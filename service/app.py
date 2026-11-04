@@ -24,6 +24,9 @@ import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 
+from contextlib import asynccontextmanager
+import glob
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 import httpx
@@ -31,8 +34,8 @@ from starlette.background import BackgroundTask
 
 import dashboard
 
-LOG_FILE = "/logs/access.jsonl"
-LOG_FILE_OLD = LOG_FILE + ".1"
+LOG_DIR = "/logs"
+# A safety limit per day, so that a flood of requests cannot fill the disk.
 LOG_FILE_BYTES = 50_000_000
 S3_ENDPOINT = os.environ["S3_ENDPOINT"].rstrip("/")
 S3_REGION = os.environ.get("S3_REGION", "us-east-1")
@@ -43,6 +46,15 @@ ACCESS_LOG = os.environ.get("ACCESS_LOG") or "off"
 ACCESS_LOG_KEY = os.environ.get("ACCESS_LOG_KEY", "")
 # The Keycloak group that may open /.dashboard. Empty: there is no dashboard.
 DASHBOARD_GROUP = os.environ.get("DASHBOARD_GROUP", "")
+# How long the log files stay, in days.
+try:
+    ACCESS_LOG_RETENTION_DAYS = int(os.environ.get("ACCESS_LOG_RETENTION_DAYS") or 30)
+except ValueError:
+    raise SystemExit("ACCESS_LOG_RETENTION_DAYS must be a number of days.") from None
+if ACCESS_LOG_RETENTION_DAYS < 1:
+    raise SystemExit("ACCESS_LOG_RETENTION_DAYS must be at least 1.")
+# Docker's own log knows no retention in days, so access lines go there only on request.
+ACCESS_LOG_STDOUT = os.environ.get("ACCESS_LOG_STDOUT", "").lower() == "true"
 if ACCESS_LOG not in ("off", "anonymous", "full"):
     raise SystemExit("ACCESS_LOG must be off, anonymous or full.")
 if ACCESS_LOG == "anonymous" and len(ACCESS_LOG_KEY) < 32:
@@ -88,7 +100,39 @@ log = logging.getLogger("docs-gateway")
 # One line per read is enough, and these would name each signed request too.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def remove_old_logs():
+    """Whatever was last written before the retention period ends goes, also in a setting that was shortened."""
+    limit = time.time() - ACCESS_LOG_RETENTION_DAYS * 86400
+    for path in log_files():
+        try:
+            if os.path.getmtime(path) < limit:
+                os.remove(path)
+                log.info("Removed the expired access log %s", os.path.basename(path))
+        except OSError as failure:
+            log.warning("Access log file: %s", type(failure).__name__)
+
+
+def log_files():
+    return sorted(glob.glob(f"{LOG_DIR}/access*.jsonl*"))
+
+
+async def clean_up_hourly():
+    while True:
+        await asyncio.to_thread(remove_old_logs)
+        await asyncio.sleep(3600)
+
+
+@asynccontextmanager
+async def lifespan(_):
+    # Also with the log off: a mode switched off later must not keep old lines forever.
+    task = asyncio.create_task(clean_up_hourly())
+    yield
+    task.cancel()
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 _tls = ssl.create_default_context(cafile=CA_FILE) if S3_ENDPOINT.startswith("https:") else False
 if _tls:
     # Python 3.13's stricter check refuses some company CAs that APISIX accepts.
@@ -121,12 +165,13 @@ def source_of(request):
 
 
 def write_log_line(line):
-    """For the dashboard. Two files at most, so the log cannot fill the disk. Reading a document does not
-    depend on this: a full disk costs log lines, not access."""
+    """One file per day. Reading a document does not depend on this: a full disk costs log lines, not access."""
+    path = f"{LOG_DIR}/access-{datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d}.jsonl"
     try:
-        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) >= LOG_FILE_BYTES:
-            os.replace(LOG_FILE, LOG_FILE_OLD)
-        with open(LOG_FILE, "a", encoding="utf-8") as output:
+        if os.path.exists(path) and os.path.getsize(path) >= LOG_FILE_BYTES:
+            log.warning("Today's access log is full; further lines of today are not kept.")
+            return
+        with open(path, "a", encoding="utf-8") as output:
             output.write(line + "\n")
     except OSError as failure:
         log.warning("Access log file: %s", type(failure).__name__)
@@ -143,7 +188,8 @@ def audit(event, request, token, **fields):
     )
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     line = json.dumps({"event": event, "time": stamp, **who, "source": source_of(request), **fields}, ensure_ascii=False)
-    log.info(line)
+    if ACCESS_LOG_STDOUT:
+        log.info(line)
     write_log_line(line)
 
 
@@ -290,8 +336,8 @@ async def access_dashboard(request: Request):
         audit("dashboard_refused", request, token)
         return page(403, "No access", "This page is for another group.")
     audit("dashboard", request, token)
-    entries = await asyncio.to_thread(dashboard.read_entries, [LOG_FILE_OLD, LOG_FILE])
-    body = await asyncio.to_thread(dashboard.render, entries, ACCESS_LOG, request.query_params.get("period", "7d"))
+    entries = await asyncio.to_thread(dashboard.read_entries, log_files())
+    body = await asyncio.to_thread(dashboard.render, entries, ACCESS_LOG, request.query_params.get("period", "7d"), retention=ACCESS_LOG_RETENTION_DAYS)
     return HTMLResponse(body, headers={
         "Content-Security-Policy": PAGE_POLICY, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
         "Referrer-Policy": "no-referrer",

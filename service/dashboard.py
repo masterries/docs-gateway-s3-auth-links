@@ -103,7 +103,7 @@ def _days(reads, now, days):
     )
 
 
-def render(entries, mode, period="7d", now=None):
+def render(entries, mode, period="7d", now=None, retention=None):
     """The page for these log entries. Everything from the log is escaped: documents and sources are outside input."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     period = period if period in PERIODS else "7d"
@@ -140,7 +140,7 @@ def render(entries, mode, period="7d", now=None):
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>Access dashboard</title><style>{STYLE}</style></head><body><main>"
-        f'<div class="top"><div><h1>Access dashboard</h1><span class="muted">Log mode: {_esc(mode)}</span></div><nav aria-label="Period">{links}</nav></div>'
+        f'<div class="top"><div><h1>Access dashboard</h1><span class="muted">Log mode: {_esc(mode)}{f" · kept for {retention} days" if retention else ""}</span></div><nav aria-label="Period">{links}</nav></div>'
         f'<div class="tiles">{tiles}</div>{_days(reads, now, days)}'
         f'<div class="grid">{_ranked("Most read documents", "Document", documents)}{_ranked("Reads per source", "Source", sources)}'
         f'{_ranked(person_title, "Person", people)}{_ranked("Document and source", "Document · source", pairs)}{_ranked("Refused", "Document · person", denied)}</div>'
