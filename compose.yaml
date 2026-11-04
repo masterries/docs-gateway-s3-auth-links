@@ -29,10 +29,15 @@ services:
       S3_REGION: ${S3_REGION:-us-east-1}
       ACCESS_LOG: ${ACCESS_LOG:-off}
       ACCESS_LOG_KEY: ${ACCESS_LOG_KEY:-}
+      DASHBOARD_GROUP: ${DASHBOARD_GROUP:-}
     volumes:
       - ./certs:/certs:ro
+      - access-log:/logs
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     mem_limit: 256m
+
+volumes:
+  access-log:

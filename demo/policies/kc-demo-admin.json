@@ -1,0 +1,9 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": ["arn:aws:s3:::*/*"]},
+    {"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": ["arn:aws:s3:::*"]},
+    {"Effect": "Deny", "Action": ["s3:*"], "Resource": ["arn:aws:s3:::*"],
+     "Condition": {"StringEquals": {"s3:authType": ["REST-QUERY-STRING"]}}}
+  ]
+}

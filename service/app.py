@@ -7,6 +7,7 @@ service holds no S3 key and no JWT library, and it makes no access decision of i
 
 It trusts the header X-Raw-ID-Token only as far as RustFS does: a forged token gets no keys.
 """
+import asyncio
 import base64
 import datetime
 import hashlib
@@ -28,6 +29,11 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 import httpx
 from starlette.background import BackgroundTask
 
+import dashboard
+
+LOG_FILE = "/logs/access.jsonl"
+LOG_FILE_OLD = LOG_FILE + ".1"
+LOG_FILE_BYTES = 50_000_000
 S3_ENDPOINT = os.environ["S3_ENDPOINT"].rstrip("/")
 S3_REGION = os.environ.get("S3_REGION", "us-east-1")
 CA_FILE = os.environ.get("CA_FILE", "/certs/ca.pem")
@@ -35,6 +41,8 @@ CA_FILE = os.environ.get("CA_FILE", "/certs/ca.pem")
 # full: the person's name and the whole IP. A wrong setting stops the service instead of logging too much.
 ACCESS_LOG = os.environ.get("ACCESS_LOG") or "off"
 ACCESS_LOG_KEY = os.environ.get("ACCESS_LOG_KEY", "")
+# The Keycloak group that may open /.dashboard. Empty: there is no dashboard.
+DASHBOARD_GROUP = os.environ.get("DASHBOARD_GROUP", "")
 if ACCESS_LOG not in ("off", "anonymous", "full"):
     raise SystemExit("ACCESS_LOG must be off, anonymous or full.")
 if ACCESS_LOG == "anonymous" and len(ACCESS_LOG_KEY) < 32:
@@ -112,6 +120,18 @@ def source_of(request):
     return host if host and host != request.headers.get("host", "").split(":")[0] else "direct"
 
 
+def write_log_line(line):
+    """For the dashboard. Two files at most, so the log cannot fill the disk. Reading a document does not
+    depend on this: a full disk costs log lines, not access."""
+    try:
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) >= LOG_FILE_BYTES:
+            os.replace(LOG_FILE, LOG_FILE_OLD)
+        with open(LOG_FILE, "a", encoding="utf-8") as output:
+            output.write(line + "\n")
+    except OSError as failure:
+        log.warning("Access log file: %s", type(failure).__name__)
+
+
 def audit(event, request, token, **fields):
     if ACCESS_LOG == "off":
         return
@@ -122,17 +142,25 @@ def audit(event, request, token, **fields):
         else {"person": hmac.new(ACCESS_LOG_KEY.encode(), user.encode(), hashlib.sha256).hexdigest()[:16], "ip": short_ip(ip)}
     )
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    log.info(json.dumps({"event": event, "time": stamp, **who, "source": source_of(request), **fields}, ensure_ascii=False))
+    line = json.dumps({"event": event, "time": stamp, **who, "source": source_of(request), **fields}, ensure_ascii=False)
+    log.info(line)
+    write_log_line(line)
+
+
+def claims_of(token):
+    """What the token says, unchecked. Only RustFS's STS proves that it is genuine."""
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (IndexError, ValueError):
+        return {}
+    return claims if isinstance(claims, dict) else {}
 
 
 def username(token):
     """For the log only. RustFS has verified the token, or will refuse it."""
-    try:
-        payload = token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-        return str(claims.get("preferred_username") or claims.get("sub"))
-    except (IndexError, ValueError):
-        return "?"
+    claims = claims_of(token)
+    return str(claims.get("preferred_username") or claims.get("sub") or "?")
 
 
 async def s3_keys(token, request):
@@ -240,6 +268,32 @@ def signed_out():
 @app.get("/")
 def root():
     return page(404, "Not a document", "This address serves documents by link: /<bucket>/<file>.")
+
+
+@app.get("/.dashboard")
+async def access_dashboard(request: Request):
+    if not DASHBOARD_GROUP or ACCESS_LOG == "off":
+        return page(404, "No dashboard", "The dashboard needs ACCESS_LOG and DASHBOARD_GROUP to be set.")
+    token = request.headers.get("x-raw-id-token")
+    if not token:
+        return page(401, "Not signed in", "Open this link again to sign in.")
+    # RustFS giving keys for this token proves that Keycloak signed it, so its groups can be believed.
+    # The group therefore needs a policy in RustFS, like any group here.
+    try:
+        keys = await s3_keys(token, request)
+    except Unavailable:
+        return page(503, "Try again in a moment", "The document store does not answer right now.")
+    groups = claims_of(token).get("groups")
+    if keys is None or not isinstance(groups, list) or DASHBOARD_GROUP not in groups:
+        audit("dashboard_refused", request, token)
+        return page(403, "No access", "This page is for another group.")
+    audit("dashboard", request, token)
+    entries = await asyncio.to_thread(dashboard.read_entries, [LOG_FILE_OLD, LOG_FILE])
+    body = await asyncio.to_thread(dashboard.render, entries, ACCESS_LOG, request.query_params.get("period", "7d"))
+    return HTMLResponse(body, headers={
+        "Content-Security-Policy": PAGE_POLICY, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+    })
 
 
 @app.api_route("/{bucket}/{key:path}", methods=["GET", "HEAD"])

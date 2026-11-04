@@ -1,0 +1,43 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, because a new CVE can appear without any change here.
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: Known vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the Python packages against the advisory databases
+        run: |
+          pipx install pip-audit
+          pip-audit --require-hashes --disable-pip -r service/requirements.txt
+
+  demo:
+    name: Demo end to end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the demo
+        run: docker compose --env-file demo/demo.env -f compose.yaml -f demo/compose.yaml up -d --build
+      - name: Wait for the gateway
+        run: |
+          for attempt in $(seq 1 30); do
+            curl -skf --resolve docs.localhost:9443:127.0.0.1 https://docs.localhost:9443/.health && exit 0
+            sleep 2
+          done
+          exit 1
+      - name: Smoke test
+        run: python3 demo/smoke_test.py
+      - name: Logs after a failure
+        if: failure()
+        run: docker compose --env-file demo/demo.env -f compose.yaml -f demo/compose.yaml logs --tail 40

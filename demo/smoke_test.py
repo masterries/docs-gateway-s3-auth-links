@@ -3,8 +3,10 @@
 
 Run it after the demo is up: python3 demo/smoke_test.py
 """
+import base64
 import html
 import http.cookiejar
+import json
 import re
 import socket
 import ssl
@@ -97,6 +99,21 @@ check("bob opens his own PDF", status == 200 and body.startswith(b"%PDF"), f"HTT
 
 status, _, body = Browser().login("carol", SHARED)
 check("carol, in no group, gets nothing", status == 403 and b"%PDF" not in body, f"HTTP {status}")
+
+DASHBOARD = "https://docs.localhost:9443/.dashboard"
+status, headers, _ = Browser().get(DASHBOARD)
+check("no login: the dashboard leads to Keycloak", status == 302, f"HTTP {status}")
+status, _, body = alice.get(DASHBOARD)
+check("alice may not open the dashboard", status == 403 and b"report-2026" not in body, f"HTTP {status}")
+forged = ".".join(base64.urlsafe_b64encode(json.dumps(part).encode()).rstrip(b"=").decode() for part in ({"alg": "none"}, {"groups": ["demo-admin"], "preferred_username": "x"})) + ".eA"
+status, _, body = alice.get(DASHBOARD, headers={"X-Raw-ID-Token": forged})
+check("nor with a forged token", status == 403 and b"report-2026" not in body, f"HTTP {status}")
+dana = Browser()
+status, _, body = dana.login("dana", DASHBOARD)
+check("dana opens the dashboard, and it holds the reads", status == 200 and b"Access dashboard" in body and b"report-2026-q3.pdf" in body and b"smoke-test" in body and b"<script" not in body, f"HTTP {status}")
+for url, who in ((FINANCE, "finance"), (ENGINEERING, "engineering")):
+    status, _, body = dana.get(url)
+    check(f"the admin group reads {who}", status == 200 and body.startswith(b"%PDF"), f"HTTP {status}")
 
 print("All checks passed." if not failures else f"{failures} checks failed.")
 sys.exit(1 if failures else 0)

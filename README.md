@@ -1,5 +1,15 @@
 # docs-gateway-s3-auth-links
 
+[![Checks](https://github.com/masterries/docs-gateway-s3-auth-links/actions/workflows/checks.yml/badge.svg)](https://github.com/masterries/docs-gateway-s3-auth-links/actions/workflows/checks.yml)
+[![License: Apache-2.0](https://img.shields.io/github/license/masterries/docs-gateway-s3-auth-links)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/masterries/docs-gateway-s3-auth-links)](https://github.com/masterries/docs-gateway-s3-auth-links/commits/main)
+[![Dependabot](https://img.shields.io/badge/Dependabot-enabled-2563c9?logo=dependabot)](.github/dependabot.yml)
+[![APISIX](https://img.shields.io/badge/APISIX-3.19-e8433e?logo=apache)](compose.yaml)
+[![Keycloak](https://img.shields.io/badge/login-Keycloak-4d4d4d?logo=keycloak)](#set-it-up)
+[![RustFS](https://img.shields.io/badge/storage-RustFS-dd4b2f)](https://rustfs.com)
+
+The **Checks** badge is live. It covers the known vulnerabilities in the Python packages and the demo end to end, on every push and weekly.
+
 Stable, login-protected links to documents in [RustFS](https://rustfs.com):
 
 ```text
@@ -29,7 +39,8 @@ The first start takes a few minutes. Then open a link and accept the self-signed
 | [engineering overview](https://docs.localhost:9443/demo-data/engineering/platform-overview.pdf) | refused | opens | refused |
 | [employee handbook](https://docs.localhost:9443/demo-data/shared/employee-handbook.pdf) | opens | opens | refused |
 
-Each user's password is their name. To switch users, open `https://docs.localhost:9443/.auth/logout`.
+Each user's password is their name. `dana` is in `demo-admin`, which may read every bucket and open the
+[dashboard](https://docs.localhost:9443/.dashboard). To switch users, open `https://docs.localhost:9443/.auth/logout`.
 
 To check the demo automatically, and to remove it with its data:
 
@@ -157,10 +168,20 @@ many parts a PDF viewer loads, and opening it again counts again.
 
 - **Check the IP once on your server:** Docker normally keeps the visitor's address, but some network setups replace it with
   Docker's own gateway address. Open a link from another machine and compare the log.
-- **Keeping history:** the lines go to Docker's log and are lost when the container is recreated. For longer periods, send them to
-  your log system. Each line is one JSON object.
+- **Keeping history:** the lines go to Docker's log, and to the volume `access-log` for the dashboard. That volume keeps at most two
+  files of 50 MB, and the oldest lines drop out when both are full. For longer periods, send the lines to your log system. Each line
+  is one JSON object.
 - **Behind a load balancer:** the IP is the balancer's. An HTTP balancer can pass the real one with `real_ip_from` under
   `nginx_config.http` in `apisix/config.yaml`. One that only forwards TLS connections hides it.
+
+## Dashboard
+
+`https://docs.example.com/.dashboard` shows the access log as one page: reads per day, the most read documents, reads per source
+and per person, refusals and the latest events, for 24 hours, 7 days, 30 days or everything.
+
+To turn it on, set `ACCESS_LOG` to `anonymous` or `full`, and `DASHBOARD_GROUP` to a Keycloak group in `.env`. That group needs a policy
+in RustFS like any other, otherwise its members get no keys and are refused. Everyone else who signs in is refused too. In
+`anonymous` mode the dashboard shows only codes and networks, so nobody sees names there either.
 
 ## License
 
