@@ -224,12 +224,13 @@ def signed_headers(method, path, keys):
     }
 
 
-def page(status, title, text):
+def page(status, title, text, switch_user=True):
     """A plain answer for a person who followed a link. No script, no token, nothing from the bucket."""
+    switch = '<p><a href="/.auth/logout">Sign in as someone else</a></p>' if switch_user else ""
     body = (
         f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{html.escape(title)}</title><style>body{{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem}}</style></head>"
-        f'<body><h1>{html.escape(title)}</h1><p>{html.escape(text)}</p><p><a href="/.auth/logout">Sign in as someone else</a></p></body></html>'
+        f'<body><h1>{html.escape(title)}</h1><p>{html.escape(text)}</p>{switch}</body></html>'
     )
     return HTMLResponse(body, status, headers={
         "Content-Security-Policy": PAGE_POLICY, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
@@ -262,7 +263,8 @@ def health():
 
 @app.get("/.auth/signed-out")
 def signed_out():
-    return page(200, "Signed out", "You are signed out. Open a document link to sign in again.")
+    # No link to sign out here: it would come straight back to this same page.
+    return page(200, "Signed out", "You are signed out. Open your document link again to sign in, also as someone else.", switch_user=False)
 
 
 @app.get("/")

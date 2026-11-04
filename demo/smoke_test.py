@@ -101,6 +101,8 @@ status, _, body = Browser().login("carol", SHARED)
 check("carol, in no group, gets nothing", status == 403 and b"%PDF" not in body, f"HTTP {status}")
 
 DASHBOARD = "https://docs.localhost:9443/.dashboard"
+status, _, body = Browser().get("https://docs.localhost:9443/.auth/signed-out")
+check("the signed-out page has no link that leads back to itself", status == 200 and b"/.auth/logout" not in body, f"HTTP {status}")
 status, headers, _ = Browser().get(DASHBOARD)
 check("no login: the dashboard leads to Keycloak", status == 302, f"HTTP {status}")
 status, _, body = alice.get(DASHBOARD)
