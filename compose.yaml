@@ -2,7 +2,7 @@ name: docs-gateway-s3-auth-links
 
 services:
   apisix:
-    image: apache/apisix:3.19.0-debian@sha256:9a7e45dc943fbf10ec916d1232bae4cda9302ae28a4696cfb83c2da01d261141
+    image: apache/apisix:3.20.0-debian@sha256:013de62a9dfba7d8e6006b3e85b524c28c9f1c3549fca3b91d5b258b0b9e759a
     restart: unless-stopped
     depends_on: [service]
     env_file: ${ENV_FILE:-.env}
